@@ -1,0 +1,18 @@
+[Unit]
+Description=Run the LogSentry integrity check every 5 minutes
+Documentation=https://github.com/Dc0der-X/Log-File-Integrity-Monitor
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+
+# Spread the start time across a fleet so a thousand hosts do not all hash
+# their logs on the same second.
+RandomizedDelaySec=30
+
+# Catch up after downtime rather than silently skipping the missed window.
+Persistent=true
+Unit=logsentry.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,74 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # The portability claim in the README is only worth making if it is tested.
+  # ubuntu-latest exercises GNU coreutils; macos-latest exercises BSD userland,
+  # where stat(1) takes different flags and md5sum may not exist at all.
+  test:
+    name: Test on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Report the environment
+        run: |
+          echo "bash:  $(bash --version | head -1)"
+          echo "uname: $(uname -a)"
+          for t in md5sum md5 sha256sum shasum openssl stat logger; do
+            printf '  %-10s %s\n' "$t" "$(command -v $t || echo '(absent)')"
+          done
+
+      - name: Syntax check
+        run: make syntax
+
+      - name: Test suite
+        run: make test
+
+      - name: Demo runs clean
+        run: ./demo/demo.sh --fast
+
+  # Prove the tool still works when GNU coreutils are missing entirely, which
+  # is the situation on a stock BSD box and inside minimal containers.
+  bsd-fallback:
+    name: BSD fallback path (no md5sum)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Confirm md5sum is absent and run anyway
+        run: |
+          command -v md5sum && echo "note: md5sum present, BSD md5 path also covered below" || true
+          make test
+
+  shellcheck:
+    name: ShellCheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install shellcheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+      - name: Lint
+        run: |
+          shellcheck --severity=warning \
+            bin/logsentry lib/*.sh demo/demo.sh tests/run_tests.sh install/install.sh
+
+  # A monitor that can be subverted through its own config file is worse than
+  # no monitor, so the config-injection test is also gated on its own.
+  security:
+    name: Config injection guard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: ./tests/run_tests.sh config

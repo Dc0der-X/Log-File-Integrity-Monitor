@@ -1,0 +1,38 @@
+[Unit]
+Description=LogSentry log file integrity check
+Documentation=https://github.com/Dc0der-X/Log-File-Integrity-Monitor
+After=local-fs.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/logsentry check -c /etc/logsentry/logsentry.conf --quiet
+
+# A non-zero exit is how logsentry reports findings (1=low, 2=high,
+# 3=critical). Without this, systemd marks every detection as a unit failure
+# and, with Restart= set, would flap. SuccessExitStatus keeps the unit healthy
+# while the findings themselves go to syslog and ALERT_FILE.
+SuccessExitStatus=0 1 2 3
+
+# Hardening. LogSentry only ever reads the files it monitors and writes to its
+# own state and alert directories, so it can be locked down hard.
+User=root
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+
+# The only writable paths.
+ReadWritePaths=/var/lib/logsentry /var/log/logsentry
+
+[Install]
+WantedBy=multi-user.target

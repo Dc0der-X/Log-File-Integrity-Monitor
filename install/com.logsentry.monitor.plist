@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.logsentry.monitor</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/local/bin/logsentry</string>
+    <string>check</string>
+    <string>-c</string>
+    <string>/etc/logsentry/logsentry.conf</string>
+    <string>--quiet</string>
+  </array>
+
+  <!-- Every 5 minutes. launchd has no equivalent of systemd's
+       RandomizedDelaySec, so on a fleet stagger StartInterval per host. -->
+  <key>StartInterval</key>
+  <integer>300</integer>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <!-- Findings are reported through the configured alert sinks; these files
+       only capture unexpected crashes. -->
+  <key>StandardOutPath</key>
+  <string>/var/log/logsentry/launchd.out</string>
+  <key>StandardErrorPath</key>
+  <string>/var/log/logsentry/launchd.err</string>
+
+  <key>ProcessType</key>
+  <string>Background</string>
+</dict>
+</plist>
