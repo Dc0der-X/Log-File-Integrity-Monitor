@@ -1,0 +1,270 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>LogSentry — Log File Integrity Monitor</title>
+<meta name="description" content="Detects tampering with log files — rewrites, truncation, deletion and timestamp forgery — using nothing but Bash and the utilities already on the box.">
+<style>
+  :root{
+    --bg:#0d1117; --panel:#141a22; --panel2:#191f28; --line:#242c37;
+    --ink:#e6edf3; --muted:#8b949e; --dim:#6b7280;
+    --accent:#4EAA25; --crit:#ef4444; --high:#f97316; --med:#eab308;
+    --low:#22d3ee; --info:#6b7280; --ok:#22c55e;
+    --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--ink);
+       font:16px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+       -webkit-font-smoothing:antialiased}
+  .wrap{max-width:1080px;margin:0 auto;padding:0 24px}
+  a{color:#58a6ff;text-decoration:none}
+  a:hover{text-decoration:underline}
+  code{font-family:var(--mono);font-size:.88em}
+
+  /* ---- nav ---- */
+  nav{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.86);
+      backdrop-filter:blur(10px);border-bottom:1px solid var(--line)}
+  nav .wrap{display:flex;align-items:center;gap:26px;height:58px}
+  .brand{font-weight:700;letter-spacing:-.01em;color:var(--ink);font-size:16px}
+  .brand span{color:var(--accent)}
+  nav .links{margin-left:auto;display:flex;gap:22px;font-size:14px}
+  nav .links a{color:var(--muted)}
+  nav .links a:hover{color:var(--ink);text-decoration:none}
+  @media(max-width:720px){nav .links a.hide{display:none}}
+
+  /* ---- hero ---- */
+  header{padding:78px 0 54px;text-align:center;
+         background:radial-gradient(900px 380px at 50% -80px,rgba(78,170,37,.10),transparent 70%)}
+  h1{font-size:52px;line-height:1.05;margin:0 0 16px;letter-spacing:-.03em;font-weight:800}
+  .tag{font-size:19px;color:var(--muted);max-width:660px;margin:0 auto 12px}
+  .tag strong{color:var(--ink);font-weight:600}
+  .badges{display:flex;gap:8px;justify-content:center;flex-wrap:wrap;margin:24px 0 30px}
+  .badge{font-size:11.5px;font-family:var(--mono);padding:4px 11px;border-radius:20px;
+         border:1px solid var(--line);background:var(--panel);color:var(--muted)}
+  .badge b{color:var(--accent);font-weight:600}
+  .cta{display:flex;gap:12px;justify-content:center;flex-wrap:wrap}
+  .btn{display:inline-block;padding:11px 22px;border-radius:7px;font-size:15px;font-weight:600}
+  .btn.p{background:var(--accent);color:#08130a}
+  .btn.p:hover{background:#5cc42c;text-decoration:none}
+  .btn.s{background:var(--panel);border:1px solid var(--line);color:var(--ink)}
+  .btn.s:hover{border-color:#3a4553;text-decoration:none}
+
+  /* ---- sections ---- */
+  section{padding:56px 0;border-top:1px solid var(--line)}
+  h2{font-size:28px;margin:0 0 10px;letter-spacing:-.02em}
+  .lede{color:var(--muted);margin:0 0 30px;max-width:720px}
+
+  /* ---- problem/solution ---- */
+  .split{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+  @media(max-width:800px){.split{grid-template-columns:1fr}}
+  .box{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:22px 24px}
+  .box.bad{border-left:3px solid var(--crit)}
+  .box.good{border-left:3px solid var(--ok)}
+  .box h3{margin:0 0 10px;font-size:15px;text-transform:uppercase;letter-spacing:.07em;color:var(--muted)}
+  .box.bad h3{color:var(--crit)} .box.good h3{color:var(--ok)}
+  .box p{margin:0 0 10px;font-size:15px;color:#c9d1d9}
+  .box p:last-child{margin-bottom:0}
+
+  pre{background:var(--panel2);border:1px solid var(--line);border-radius:9px;
+      padding:16px 18px;overflow-x:auto;font-family:var(--mono);font-size:13px;
+      line-height:1.6;color:#c9d1d9;margin:0 0 16px}
+  .c-dim{color:var(--dim)} .c-ok{color:var(--ok)} .c-crit{color:var(--crit)}
+  .c-acc{color:var(--accent)} .c-med{color:var(--med)}
+
+  /* ---- verdict table ---- */
+  table{width:100%;border-collapse:collapse;background:var(--panel);
+        border:1px solid var(--line);border-radius:10px;overflow:hidden;font-size:14.5px}
+  th{text-align:left;padding:11px 16px;font-size:11px;letter-spacing:.07em;
+     text-transform:uppercase;color:var(--muted);border-bottom:1px solid var(--line)}
+  td{padding:12px 16px;border-bottom:1px solid var(--line);vertical-align:top}
+  tr:last-child td{border-bottom:none}
+  td.v{font-family:var(--mono);font-weight:600;white-space:nowrap}
+  .pill{display:inline-block;padding:2px 9px;border-radius:4px;font-size:10px;
+        font-weight:700;letter-spacing:.05em;color:#0d1117}
+  .p-crit{background:var(--crit);color:#fff} .p-high{background:var(--high)}
+  .p-med{background:var(--med)} .p-low{background:var(--low)} .p-info{background:var(--info);color:#fff}
+
+  /* ---- shots ---- */
+  figure{margin:0 0 26px}
+  figure img{width:100%;border-radius:10px;border:1px solid var(--line);display:block}
+  figcaption{color:var(--dim);font-size:13px;margin-top:9px;text-align:center}
+
+  /* ---- feature grid ---- */
+  .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
+  @media(max-width:860px){.grid{grid-template-columns:1fr 1fr}}
+  @media(max-width:560px){.grid{grid-template-columns:1fr}}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:20px}
+  .card h4{margin:0 0 7px;font-size:15px}
+  .card p{margin:0;font-size:14px;color:var(--muted);line-height:1.6}
+
+  /* ---- docs list ---- */
+  .docs{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  @media(max-width:760px){.docs{grid-template-columns:1fr}}
+  .doc{display:block;background:var(--panel);border:1px solid var(--line);
+       border-radius:10px;padding:18px 20px;color:var(--ink)}
+  .doc:hover{border-color:var(--accent);text-decoration:none}
+  .doc b{display:block;font-size:15px;margin-bottom:4px}
+  .doc span{font-size:13.5px;color:var(--muted)}
+
+  footer{border-top:1px solid var(--line);padding:34px 0 46px;color:var(--dim);font-size:14px}
+  footer .wrap{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap}
+</style>
+</head>
+<body>
+
+<nav><div class="wrap">
+  <span class="brand">Log<span>Sentry</span></span>
+  <div class="links">
+    <a href="#problem" class="hide">Why</a>
+    <a href="#detect">Detection</a>
+    <a href="#start">Quick start</a>
+    <a href="#docs" class="hide">Docs</a>
+    <a href="https://github.com/Dc0der-X/Log-File-Integrity-Monitor">GitHub</a>
+  </div>
+</div></nav>
+
+<header><div class="wrap">
+  <h1>Log File Integrity Monitor</h1>
+  <p class="tag">Detects tampering with log files — <strong>rewrites, truncation, deletion
+     and timestamp forgery</strong> — using nothing but Bash and the utilities already on the box.</p>
+  <div class="badges">
+    <span class="badge">bash <b>3.2+</b></span>
+    <span class="badge">dependencies <b>none</b></span>
+    <span class="badge">Linux · macOS · BSD</span>
+    <span class="badge"><b>73</b> test assertions</span>
+    <span class="badge">MIT</span>
+  </div>
+  <div class="cta">
+    <a class="btn p" href="https://github.com/Dc0der-X/Log-File-Integrity-Monitor">View on GitHub</a>
+    <a class="btn s" href="#start">Quick start</a>
+  </div>
+</div></header>
+
+<section id="problem"><div class="wrap">
+  <h2>Hashing log files is harder than it looks</h2>
+  <p class="lede">When someone breaks into a host, editing <code>/var/log/auth.log</code> is
+     step one of covering their tracks. The obvious defence — hash the files, compare later —
+     falls apart on the one kind of file it is needed for.</p>
+  <div class="split">
+    <div class="box bad">
+      <h3>The naive approach</h3>
+      <p><code>md5sum -c auth.log.md5</code> fails every few seconds, because log files
+         grow by design. <code>sshd</code> writes to it. <code>sudo</code> writes to it.
+         <code>cron</code> writes to it.</p>
+      <p>So the alert fires constantly, somebody mutes it "until we have time to tune it",
+         and nobody ever has time. When it finally matters, the channel is off.</p>
+    </div>
+    <div class="box good">
+      <h3>What LogSentry asks instead</h3>
+      <p>Given that the file was <b>S bytes</b> and hashed to <b>H</b> at baseline time —
+         does the <b>first S bytes</b> of the file today still hash to <b>H</b>?</p>
+      <p>If yes, everything already written is intact and the file was only appended to.
+         No alert. If no, something rewrote history, and that is not a thing well-behaved
+         daemons do.</p>
+    </div>
+  </div>
+</div></section>
+
+<section id="detect"><div class="wrap">
+  <h2>One comparison, three outcomes</h2>
+  <p class="lede">That single distinction is the difference between a tool you deploy
+     and a tool you mute.</p>
+<pre>   baseline    <span class="c-dim">[ 517 bytes, md5 = 4f3a…9c ]</span>
+
+   append      <span class="c-dim">[ 517 bytes, md5 = 4f3a…9c ][ 95 new bytes ]</span>   prefix matches   <span class="c-ok">→ INFO</span>
+   rewrite     <span class="c-dim">[ 517 bytes, md5 = b81e…07 ][ 95 new bytes ]</span>   prefix differs   <span class="c-med">→ HIGH</span>
+   truncate    <span class="c-dim">[ 190 bytes                ]</span>                   file shrank      <span class="c-crit">→ CRITICAL</span></pre>
+
+  <figure>
+    <img src="../docs/images/detection.png" alt="LogSentry detecting six kinds of log tampering in a terminal">
+    <figcaption>Real output: routine appends stay quiet, then six findings after a simulated intrusion.</figcaption>
+  </figure>
+
+  <table>
+    <thead><tr><th>Verdict</th><th>Severity</th><th>What actually happened</th><th>Exit</th></tr></thead>
+    <tbody>
+      <tr><td class="v">APPENDED</td><td><span class="pill p-info">INFO</span></td><td>New lines added, earlier bytes verified intact — normal logging</td><td>0</td></tr>
+      <tr><td class="v">ROTATED</td><td><span class="pill p-info">INFO</span></td><td>New inode with an archived copy alongside — logrotate did its job</td><td>0</td></tr>
+      <tr><td class="v">NEW</td><td><span class="pill p-low">LOW</span></td><td>A file appeared in a monitored directory since the baseline</td><td>1</td></tr>
+      <tr><td class="v">PERMS</td><td><span class="pill p-med">MEDIUM</span></td><td>Mode, owner or group changed</td><td>1</td></tr>
+      <tr><td class="v">TIMESTOMP</td><td><span class="pill p-med">MEDIUM</span></td><td>mtime moved <em>backwards</em> — timestamps were forged</td><td>1</td></tr>
+      <tr><td class="v">MODIFIED</td><td><span class="pill p-high">HIGH</span></td><td>Bytes that already existed were rewritten — log history was altered</td><td>2</td></tr>
+      <tr><td class="v">TRUNCATED</td><td><span class="pill p-crit">CRITICAL</span></td><td>The file shrank — a partial or total log wipe</td><td>3</td></tr>
+      <tr><td class="v">DELETED</td><td><span class="pill p-crit">CRITICAL</span></td><td>A baselined file is gone</td><td>3</td></tr>
+      <tr><td class="v">SEAL</td><td><span class="pill p-crit">CRITICAL</span></td><td>The <em>baseline itself</em> was edited after it was sealed</td><td>3</td></tr>
+    </tbody>
+  </table>
+</div></section>
+
+<section><div class="wrap">
+  <h2>Built to be deployed, not just demoed</h2>
+  <p class="lede">The parts that decide whether a security tool survives contact with
+     production.</p>
+  <div class="grid">
+    <div class="card"><h4>No dependencies</h4><p>On a host you have started to distrust,
+      <code>pip install</code> is not a step you get to take. Bash plus what the OS ships.</p></div>
+    <div class="card"><h4>GNU and BSD</h4><p><code>stat</code> flags and digest tools differ
+      across platforms. CI runs the suite on Ubuntu and macOS, so the claim is tested.</p></div>
+    <div class="card"><h4>Severity exit codes</h4><p>0 clean, 1 low, 2 high, 3 critical.
+      Cron and systemd act on the result without parsing a line of output.</p></div>
+    <div class="card"><h4>Five alert sinks</h4><p>Console, ECS-shaped JSONL, syslog via
+      <code>logger</code>, Slack/Teams via <code>curl</code>, email via <code>mail</code>.</p></div>
+    <div class="card"><h4>A sealed baseline</h4><p>The attacker's next move is editing the
+      baseline. Optional HMAC-SHA256 with the key held off the host.</p></div>
+    <div class="card"><h4>Config is never sourced</h4><p>Sourcing would hand root to anyone
+      who can write the config. Parsed by hand, unknown keys rejected, regression-tested.</p></div>
+  </div>
+</div></section>
+
+<section id="start"><div class="wrap">
+  <h2>Quick start</h2>
+  <p class="lede">No installation required — it runs straight from a clone.</p>
+<pre><span class="c-dim"># Clone and watch it catch a simulated intrusion, in a sandbox</span>
+git clone https://github.com/Dc0der-X/Log-File-Integrity-Monitor.git
+cd Log-File-Integrity-Monitor
+<span class="c-acc">./demo/demo.sh</span>
+
+<span class="c-dim"># Then point it at something real</span>
+sudo ./bin/logsentry <span class="c-acc">init</span>  -p /var/log/auth.log -p /var/log/syslog
+sudo ./bin/logsentry <span class="c-acc">check</span>
+
+<span class="c-dim"># Install with a scheduler (detects systemd, launchd or cron)</span>
+sudo ./install/install.sh --with-timer</pre>
+  <p class="lede"><code>init</code> records the baseline. <code>check</code> compares against
+     it. That is the whole mental model.</p>
+
+  <figure>
+    <img src="../docs/images/html-report.png" alt="The self-contained HTML integrity report">
+    <figcaption>Self-contained HTML report — no external CSS, no web fonts, no JavaScript.
+      It opens on an air-gapped forensics laptop.</figcaption>
+  </figure>
+</div></section>
+
+<section id="docs"><div class="wrap">
+  <h2>Documentation</h2>
+  <p class="lede">Four deep-dive documents, not an afterthought.</p>
+  <div class="docs">
+    <a class="doc" href="https://github.com/Dc0der-X/Log-File-Integrity-Monitor/blob/main/docs/DETECTION-LOGIC.md">
+      <b>Detection logic</b><span>The decision table, the prefix-hash proof, and why rotation
+      and same-size rewrites break naive tools.</span></a>
+    <a class="doc" href="https://github.com/Dc0der-X/Log-File-Integrity-Monitor/blob/main/docs/ARCHITECTURE.md">
+      <b>Architecture &amp; threat model</b><span>Data flow, the baseline format, what this
+      does <em>not</em> defend against, and the trade-offs behind each decision.</span></a>
+    <a class="doc" href="https://github.com/Dc0der-X/Log-File-Integrity-Monitor/blob/main/docs/USAGE.md">
+      <b>Usage reference</b><span>Every command and flag, deployment recipes for systemd,
+      cron, launchd, Filebeat and Ansible, plus troubleshooting.</span></a>
+    <a class="doc" href="https://github.com/Dc0der-X/Log-File-Integrity-Monitor/blob/main/docs/INCIDENT-RESPONSE.md">
+      <b>Incident response runbook</b><span>What to actually do at 03:00 when it fires —
+      preserve, recover, pivot, contain.</span></a>
+  </div>
+</div></section>
+
+<footer><div class="wrap">
+  <span>LogSentry 1.0.0 · MIT licensed</span>
+  <span><a href="https://github.com/Dc0der-X/Log-File-Integrity-Monitor">github.com/Dc0der-X/Log-File-Integrity-Monitor</a></span>
+</div></footer>
+
+</body>
+</html>
