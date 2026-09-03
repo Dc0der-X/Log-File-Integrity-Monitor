@@ -131,6 +131,7 @@ ls_parse_args() {
       --sidecar)     LS_CLI_SIDECAR=1; shift ;;
       --all)         LS_SHOW_OK=1; shift ;;
       -y|--yes)      LS_ASSUME_YES=1; shift ;;
+      # shellcheck disable=SC2034  # LS_VERBOSE is read by ls_debug() in lib/common.sh
       -v|--verbose)  LS_VERBOSE=1; shift ;;
       -q|--quiet)    LS_QUIET=1; shift ;;
       -h|--help)     ls_usage; exit 0 ;;
@@ -154,8 +155,11 @@ ls_bootstrap() {
   [ -n "$LS_CONFIG" ] && ls_load_config "$LS_CONFIG"
   ls_config_defaults
 
-  # Command line beats config file.
+  # Command line beats config file. These are consumed by the lib/*.sh modules,
+  # which ShellCheck analyses separately and therefore reports as unused.
+  # shellcheck disable=SC2034
   [ -n "$LS_CLI_STATE" ]    && STATE_DIR="$LS_CLI_STATE"
+  # shellcheck disable=SC2034
   [ -n "$LS_CLI_ALGO" ]     && HASH_ALGO="$LS_CLI_ALGO"
   [ -n "$LS_CLI_INTERVAL" ] && CHECK_INTERVAL="$LS_CLI_INTERVAL"
   [ -n "$LS_CLI_SIDECAR" ]  && SIDECAR_MD5=1
@@ -268,7 +272,7 @@ ls_check_core() {
 
 ls_reset_counters() {
   LS_COUNT_TOTAL=0 LS_COUNT_OK=0 LS_COUNT_INFO=0 LS_COUNT_LOW=0
-  LS_COUNT_MEDIUM=0 LS_COUNT_HIGH=0 LS_COUNT_CRITICAL=0 LS_MAX_RANK=0
+  LS_COUNT_MEDIUM=0 LS_COUNT_HIGH=0 LS_COUNT_CRITICAL=0
 }
 
 cmd_check() {

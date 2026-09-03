@@ -187,12 +187,10 @@ LS_COUNT_LOW=0
 LS_COUNT_MEDIUM=0
 LS_COUNT_HIGH=0
 LS_COUNT_CRITICAL=0
-LS_MAX_RANK=0
 
 ls_emit() {
-  local verdict="$1" detail="$2" path="$3" sev rank
+  local verdict="$1" detail="$2" path="$3" sev
   sev=$(ls_severity_of "$verdict")
-  rank=$(ls_severity_rank "$sev")
 
   LS_COUNT_TOTAL=$((LS_COUNT_TOTAL + 1))
   case "$sev" in
@@ -203,7 +201,6 @@ ls_emit() {
     HIGH)     LS_COUNT_HIGH=$((LS_COUNT_HIGH + 1)) ;;
     CRITICAL) LS_COUNT_CRITICAL=$((LS_COUNT_CRITICAL + 1)) ;;
   esac
-  [ "$rank" -gt "$LS_MAX_RANK" ] && LS_MAX_RANK="$rank"
 
   printf '%s\t%s\t%s\t%s\n' "$verdict" "$sev" "$detail" "$path" >> "$LS_SCAN_BUF"
 }

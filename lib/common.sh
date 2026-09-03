@@ -14,18 +14,21 @@
 # stdout is not a TTY, so piping to a file or a SIEM never embeds escape codes.
 # FORCE_COLOR / CLICOLOR_FORCE override the TTY test, which is what you want
 # when piping to `less -R`, into a CI log, or into a screenshot pipeline.
-
+#
+# shellcheck disable=SC2034
+# C_BOLD and C_CYAN are read by lib/report.sh and lib/detect.sh. ShellCheck
+# analyses each sourced file in isolation, so it cannot see those uses.
 ls_init_colors() {
   if [ -n "${FORCE_COLOR:-}${CLICOLOR_FORCE:-}" ] && [ -z "${NO_COLOR:-}" ]; then
     C_RESET=$'\033[0m'   C_BOLD=$'\033[1m'    C_DIM=$'\033[2m'
     C_RED=$'\033[31m'    C_GREEN=$'\033[32m'  C_YELLOW=$'\033[33m'
-    C_BLUE=$'\033[34m'   C_MAGENTA=$'\033[35m' C_CYAN=$'\033[36m'
+    C_BLUE=$'\033[34m' C_CYAN=$'\033[36m'
   elif [ -n "${NO_COLOR:-}" ] || [ ! -t 1 ]; then
-    C_RESET='' C_BOLD='' C_DIM='' C_RED='' C_GREEN='' C_YELLOW='' C_BLUE='' C_MAGENTA='' C_CYAN=''
+    C_RESET='' C_BOLD='' C_DIM='' C_RED='' C_GREEN='' C_YELLOW='' C_BLUE='' C_CYAN=''
   else
     C_RESET=$'\033[0m'   C_BOLD=$'\033[1m'    C_DIM=$'\033[2m'
     C_RED=$'\033[31m'    C_GREEN=$'\033[32m'  C_YELLOW=$'\033[33m'
-    C_BLUE=$'\033[34m'   C_MAGENTA=$'\033[35m' C_CYAN=$'\033[36m'
+    C_BLUE=$'\033[34m' C_CYAN=$'\033[36m'
   fi
 }
 ls_init_colors

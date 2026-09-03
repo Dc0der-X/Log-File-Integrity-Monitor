@@ -88,7 +88,7 @@ ls_alert_email() {
 # because paging someone forty times for one logrotate run is how alerting
 # gets muted permanently.
 ls_dispatch_alerts() {
-  local buf="$1" verdict sev detail path fired=0 summary="" line
+  local buf="$1" verdict sev detail path fired=0 summary=""
   local host; host=$(hostname 2>/dev/null || printf unknown)
 
   while IFS=$'\t' read -r verdict sev detail path; do
