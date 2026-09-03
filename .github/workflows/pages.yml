@@ -1,0 +1,76 @@
+name: Deploy landing page
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'site/**'
+      - 'docs/images/**'
+      - '.github/workflows/pages.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Never run two deploys at once, and never cancel one halfway — a cancelled
+# Pages deploy can leave the site serving a partial build.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Assemble
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Assemble the site
+        run: |
+          mkdir -p _site/images
+          cp site/index.html _site/index.html
+          cp docs/images/*.png _site/images/
+
+          # The committed page points at ../docs/images/ so it still renders
+          # when opened straight out of a checkout. The published site is flat,
+          # with the images beside index.html, so rewrite the paths at build
+          # time rather than keeping two copies of the page in the repo.
+          sed -i 's|\.\./docs/images/|images/|g' _site/index.html
+
+          # Jekyll would otherwise try to process this and choke on nothing in
+          # particular; the site is plain HTML and needs no build step.
+          touch _site/.nojekyll
+
+      - name: Verify no broken image references
+        run: |
+          # A landing page whose screenshots 404 is worse than no landing page.
+          # Fail the build here rather than discovering it in a browser later.
+          missing=0
+          for ref in $(grep -o 'src="[^"]*"' _site/index.html | sed 's/src="//;s/"//'); do
+            case "$ref" in http*) continue ;; esac
+            if [ ! -f "_site/$ref" ]; then
+              echo "::error::index.html references missing file: $ref"
+              missing=1
+            fi
+          done
+          [ "$missing" -eq 0 ] && echo "all image references resolve"
+          exit "$missing"
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    name: Deploy
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

@@ -15,6 +15,14 @@
 </p>
 
 <p align="center">
+  <a href="https://dc0der-x.github.io/Log-File-Integrity-Monitor/"><strong>Project page</strong></a> ·
+  <a href="docs/DETECTION-LOGIC.md">Detection logic</a> ·
+  <a href="docs/ARCHITECTURE.md">Architecture</a> ·
+  <a href="docs/USAGE.md">Usage</a> ·
+  <a href="docs/INCIDENT-RESPONSE.md">IR runbook</a>
+</p>
+
+<p align="center">
   <img src="docs/images/detection.png" alt="LogSentry detecting six kinds of log tampering in a terminal" width="100%">
 </p>
 
