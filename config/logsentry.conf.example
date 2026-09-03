@@ -1,0 +1,121 @@
+# logsentry.conf — LogSentry configuration
+#
+# Format: KEY=VALUE, one per line. Values may be quoted. Lines starting with #
+# are comments. This file is PARSED, not sourced — shell metacharacters have no
+# special meaning and unknown keys are a hard error, so a typo fails at
+# start-up instead of silently monitoring nothing.
+#
+# Precedence:  command-line flags  >  this file  >  built-in defaults
+#
+# Install to /etc/logsentry/logsentry.conf and `chmod 600` it. A world-writable
+# config lets any local user redirect what the (root) monitor watches.
+
+# ---------------------------------------------------------------------------
+# What to monitor
+# ---------------------------------------------------------------------------
+# Space-separated list of files, directories (walked recursively) and globs.
+# The defaults below cover the logs an attacker touches first: authentication,
+# sudo, and the web server access log.
+#
+# Debian / Ubuntu:
+WATCH_PATHS="/var/log/auth.log /var/log/syslog /var/log/sudo.log /var/log/nginx/*.log"
+#
+# RHEL / CentOS / Fedora — uncomment instead of the line above:
+# WATCH_PATHS="/var/log/secure /var/log/messages /var/log/audit/audit.log /var/log/httpd/*_log"
+#
+# macOS (for local testing):
+# WATCH_PATHS="/var/log/system.log /var/log/install.log"
+
+# Basenames or paths to skip. Compressed archives are excluded by default:
+# they are logrotate's output, they never change again once written, and
+# hashing them on every pass is wasted I/O.
+EXCLUDE_PATTERNS="*.gz *.bz2 *.xz *.zip *.tar"
+
+# Do not descend into symlinked files or directories. Leave this at 0 unless
+# you have a specific reason: a symlink swap is itself a common way to redirect
+# a monitor away from the file it thinks it is watching.
+FOLLOW_SYMLINKS=0
+
+# Skip files larger than this many bytes (0 = no limit). Useful on hosts with
+# multi-gigabyte access logs where a full re-hash every minute is too costly;
+# consider raising CHECK_INTERVAL instead of skipping the file entirely.
+MAX_FILE_SIZE=0
+
+# ---------------------------------------------------------------------------
+# Baseline
+# ---------------------------------------------------------------------------
+# Where the baseline, seal, event log and scan history live. On a production
+# host, put this on separate storage from the logs themselves — ideally
+# read-only or append-only media — so an attacker who owns /var/log does not
+# automatically own the evidence that /var/log changed.
+STATE_DIR=/var/lib/logsentry
+
+# md5 (fast, and what this project is specified around) or sha256.
+#
+# MD5 is broken for *collision resistance*: an adversary can construct two
+# different files with the same digest. It is not broken for the property this
+# tool relies on, which is second-preimage resistance — given a log file that
+# already exists, producing different content with the same MD5 is not
+# practical. MD5 is the right default here because it is roughly twice as fast
+# on large files and universally available. Switch to sha256 when a compliance
+# regime demands it (PCI DSS 11.5, FIPS environments).
+HASH_ALGO=md5
+
+# Also write a classic `<file>.md5` sidecar next to every monitored file, in
+# the format `md5sum -c` accepts. Interoperable with the manual workflow, but
+# it writes into the log directory, which some hardened hosts audit.
+SIDECAR_MD5=0
+
+# Seal the baseline with HMAC-SHA256 instead of a plain digest. This is what
+# stops an attacker from editing the logs, rebuilding the baseline, and
+# re-sealing it to look clean.
+#
+# The key is only meaningful if it is NOT reachable from the host being
+# monitored — keep it on your management station and pass it in at check time:
+#
+#     BASELINE_SEAL_KEY=$(cat /mnt/usb/logsentry.key) logsentry check
+#
+# BASELINE_SEAL_KEY=
+
+# ---------------------------------------------------------------------------
+# Alerting
+# ---------------------------------------------------------------------------
+# Minimum severity that triggers an alert: INFO, LOW, MEDIUM, HIGH, CRITICAL.
+#
+# LOW is the right production default. Dropping to INFO alerts on every normal
+# append and every logrotate run, which trains people to ignore the channel.
+ALERT_MIN_SEVERITY=LOW
+
+# Human-readable findings on stderr.
+ALERT_CONSOLE=1
+
+# Append one JSON object per finding, ECS-shaped, ready for Filebeat/Fluent Bit
+# to pick up. Point your log shipper at this file.
+ALERT_FILE=/var/log/logsentry/events.jsonl
+
+# Send findings to syslog via logger(1) with facility auth. Severity maps to
+# crit / err / warning / notice, so existing SIEM rules on auth.crit fire
+# without any new parsing.
+ALERT_SYSLOG=1
+ALERT_SYSLOG_TAG=logsentry
+
+# Slack or Microsoft Teams incoming webhook. One digest message per scan, not
+# one per file. Leave empty to disable.
+# ALERT_WEBHOOK_URL=https://hooks.slack.com/services/XXX/YYY/ZZZ
+
+# Email digest via mail(1). Requires a working local MTA. Leave empty to
+# disable.
+# ALERT_EMAIL=soc@example.com
+
+# ---------------------------------------------------------------------------
+# Watch mode
+# ---------------------------------------------------------------------------
+# Seconds between passes for `logsentry watch`.
+#
+# This is a polling monitor, and the interval is the detection window: an
+# attacker who edits a log and restores its size within the interval is still
+# caught (content is hashed, not just size), but one who edits and then removes
+# the tool has a window of this length. 60s is a reasonable balance; drop to
+# 10-15s on high-value hosts, and see docs/ARCHITECTURE.md for why real-time
+# inotify-based watching is deliberately not implemented.
+CHECK_INTERVAL=60

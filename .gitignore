@@ -1,0 +1,37 @@
+# Local configuration — the tool auto-loads config/logsentry.conf if present,
+# so a developer's own watch list must never be committed.
+config/logsentry.conf
+
+# Runtime state. The baseline is host-specific and is evidence; it does not
+# belong in version control.
+*.db
+*.seal
+*.jsonl
+last_scan.tsv
+baseline.db.*
+.last_count
+
+# Sidecar digests written by SIDECAR_MD5=1
+*.md5
+
+# Generated reports
+*.report.html
+incident-*.html
+incident-*.json
+
+# Scratch
+/tmp/
+*.tmp
+*.bak
+*.orig
+
+# OS noise
+.DS_Store
+Thumbs.db
+._*
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*~

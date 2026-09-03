@@ -1,0 +1,458 @@
+#!/usr/bin/env bash
+#
+# logsentry — log file integrity monitor
+#
+# Detects tampering with log files by hashing them into a baseline and, on
+# every subsequent check, proving that the bytes which already existed are
+# still byte-for-byte identical. Appends are recognised as normal; rewrites,
+# truncation and deletion are escalated.
+#
+# Written in portable Bash against POSIX utilities only. No runtime
+# dependencies — on a host you suspect is compromised, `pip install` is not a
+# step you get to take.
+#
+# Repository: https://github.com/Dc0der-X/Log-File-Integrity-Monitor
+# License: MIT
+
+set -o pipefail
+
+LS_VERSION="1.0.0"
+
+# --- Exit codes -------------------------------------------------------------
+# Designed for cron, systemd and monitoring agents: the exit code alone tells
+# an orchestrator how bad it is, without parsing any output.
+LS_EXIT_OK=0        # no changes, or informational only (appends, rotations)
+LS_EXIT_LOW=1       # low / medium findings — new files, permission drift
+LS_EXIT_HIGH=2      # high findings — log content was modified
+LS_EXIT_CRITICAL=3  # critical — truncation, deletion, or a broken seal
+LS_EXIT_USAGE=64    # bad invocation
+LS_EXIT_RUNTIME=65  # configuration or runtime error
+export LS_EXIT_RUNTIME
+
+# --- Locate our own libraries ----------------------------------------------
+# Resolve symlinks so the tool works when installed as /usr/local/bin/logsentry
+# pointing back into a checkout.
+ls_self="${BASH_SOURCE[0]}"
+while [ -L "$ls_self" ]; do
+  ls_link=$(readlink "$ls_self")
+  case "$ls_link" in
+    /*) ls_self="$ls_link" ;;
+    *)  ls_self="$(dirname "$ls_self")/$ls_link" ;;
+  esac
+done
+LS_ROOT="$(cd "$(dirname "$ls_self")/.." && pwd)"
+LS_LIB="${LS_LIB:-$LS_ROOT/lib}"
+
+for _mod in common baseline detect alert report; do
+  # shellcheck source=/dev/null
+  . "$LS_LIB/${_mod}.sh" || { printf 'logsentry: cannot load %s/%s.sh\n' "$LS_LIB" "$_mod" >&2; exit 65; }
+done
+
+# --- Defaults ---------------------------------------------------------------
+LS_CONFIG="${LOGSENTRY_CONFIG:-}"
+LS_FORMAT=text
+LS_OUTFILE=""
+LS_SHOW_OK=0
+LS_ASSUME_YES=0
+
+ls_usage() {
+  cat <<'HELPTEXT'
+logsentry — log file integrity monitor
+
+USAGE
+    logsentry <command> [options] [paths...]
+
+COMMANDS
+    init            Create a baseline of the monitored files
+    check           Compare the live files against the baseline  (the main verb)
+    watch           Run check on a loop, alerting on every deviation
+    status          Show baseline age, size and seal state
+    accept          Re-baseline after reviewing legitimate changes
+    verify          Verify the baseline's own seal, nothing else
+    report          Render the most recent scan as HTML or JSON
+    version         Print the version
+    help            This text
+
+OPTIONS
+    -c, --config FILE     Configuration file (default: ./config/logsentry.conf,
+                          then /etc/logsentry/logsentry.conf)
+    -p, --path PATH       Monitor PATH; repeatable. Overrides WATCH_PATHS.
+    -s, --state DIR       State directory for the baseline (default: ~/.logsentry)
+    -f, --format FMT      Output format: text | json | html      (default: text)
+    -o, --output FILE     Write the report to FILE instead of stdout
+    -i, --interval SECS   Poll interval for `watch`               (default: 60)
+        --algo ALGO       Digest algorithm: md5 | sha256          (default: md5)
+        --sidecar         Also write `<file>.md5` next to each monitored file
+        --all             Include unchanged files in the report
+    -y, --yes             Do not prompt for confirmation
+    -v, --verbose         Debug output on stderr
+    -q, --quiet           Suppress everything but findings
+    -h, --help            This text
+
+EXIT CODES
+    0  clean (or informational changes only)      2  HIGH    — content modified
+    1  LOW / MEDIUM findings                      3  CRITICAL — truncated/deleted
+   64  usage error                               65  configuration/runtime error
+
+EXAMPLES
+    # Baseline the standard Linux auth and system logs
+    sudo logsentry init -p /var/log/auth.log -p /var/log/syslog
+
+    # Check them, machine-readable, for a monitoring agent
+    sudo logsentry check --format json
+
+    # Watch continuously and post to Slack (ALERT_WEBHOOK_URL in the config)
+    sudo logsentry watch -c /etc/logsentry/logsentry.conf -i 30
+
+    # Produce an HTML report to attach to an incident ticket
+    sudo logsentry check --format html -o /tmp/incident-4471.html
+
+Full documentation: https://github.com/Dc0der-X/Log-File-Integrity-Monitor
+HELPTEXT
+}
+
+# --- Argument parsing -------------------------------------------------------
+ls_parse_args() {
+  LS_CLI_PATHS=""
+  LS_CLI_STATE=""
+  LS_CLI_ALGO=""
+  LS_CLI_INTERVAL=""
+  LS_CLI_SIDECAR=""
+
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      -c|--config)   LS_CONFIG="${2:?--config needs a file}"; shift 2 ;;
+      -p|--path)     LS_CLI_PATHS="$LS_CLI_PATHS ${2:?--path needs a value}"; shift 2 ;;
+      -s|--state)    LS_CLI_STATE="${2:?--state needs a directory}"; shift 2 ;;
+      -f|--format)   LS_FORMAT="${2:?--format needs a value}"; shift 2 ;;
+      -o|--output)   LS_OUTFILE="${2:?--output needs a file}"; shift 2 ;;
+      -i|--interval) LS_CLI_INTERVAL="${2:?--interval needs seconds}"; shift 2 ;;
+      --algo)        LS_CLI_ALGO="${2:?--algo needs a value}"; shift 2 ;;
+      --sidecar)     LS_CLI_SIDECAR=1; shift ;;
+      --all)         LS_SHOW_OK=1; shift ;;
+      -y|--yes)      LS_ASSUME_YES=1; shift ;;
+      -v|--verbose)  LS_VERBOSE=1; shift ;;
+      -q|--quiet)    LS_QUIET=1; shift ;;
+      -h|--help)     ls_usage; exit 0 ;;
+      --)            shift; while [ $# -gt 0 ]; do LS_CLI_PATHS="$LS_CLI_PATHS $1"; shift; done ;;
+      -*)            ls_error "unknown option: $1"; ls_log "try: logsentry help"; exit "$LS_EXIT_USAGE" ;;
+      *)             LS_CLI_PATHS="$LS_CLI_PATHS $1"; shift ;;
+    esac
+  done
+}
+
+# --- Bootstrap --------------------------------------------------------------
+ls_bootstrap() {
+  # Config discovery: explicit flag, then the repo-local sample, then the
+  # system location. Nothing is auto-created; an absent config is fine as long
+  # as paths are supplied on the command line.
+  if [ -z "$LS_CONFIG" ]; then
+    for candidate in "$LS_ROOT/config/logsentry.conf" /etc/logsentry/logsentry.conf; do
+      [ -f "$candidate" ] && { LS_CONFIG="$candidate"; break; }
+    done
+  fi
+  [ -n "$LS_CONFIG" ] && ls_load_config "$LS_CONFIG"
+  ls_config_defaults
+
+  # Command line beats config file.
+  [ -n "$LS_CLI_STATE" ]    && STATE_DIR="$LS_CLI_STATE"
+  [ -n "$LS_CLI_ALGO" ]     && HASH_ALGO="$LS_CLI_ALGO"
+  [ -n "$LS_CLI_INTERVAL" ] && CHECK_INTERVAL="$LS_CLI_INTERVAL"
+  [ -n "$LS_CLI_SIDECAR" ]  && SIDECAR_MD5=1
+  if [ -n "${LS_CLI_PATHS// /}" ]; then
+    WATCH_PATHS="$LS_CLI_PATHS"
+    ls_debug "WATCH_PATHS overridden from the command line"
+  fi
+
+  ls_init_colors
+  ls_detect_stat
+  ls_detect_hasher || ls_die "no usable digest tool found (need one of: md5sum, md5, openssl)"
+
+  case "$LS_FORMAT" in
+    text|json|html) ;;
+    *) ls_error "unknown format '$LS_FORMAT' (expected: text, json, html)"; exit "$LS_EXIT_USAGE" ;;
+  esac
+
+  ls_state_init
+
+  LS_SCAN_BUF=$(mktemp "${TMPDIR:-/tmp}/logsentry.XXXXXX") || ls_die "cannot create a temporary file"
+  trap 'rm -f "$LS_SCAN_BUF" "$LS_SCAN_BUF.seen" 2>/dev/null' EXIT INT TERM
+}
+
+ls_require_targets() {
+  [ -n "${WATCH_PATHS// /}" ] || {
+    ls_error "no files to monitor"
+    ls_log "  Pass paths with -p, or set WATCH_PATHS in $LS_CONFIG"
+    ls_log "  Example: logsentry init -p /var/log/auth.log -p /var/log/syslog"
+    exit "$LS_EXIT_USAGE"
+  }
+}
+
+ls_require_baseline() {
+  local bl; bl=$(ls_baseline_path)
+  [ -f "$bl" ] || {
+    ls_error "no baseline at $bl"
+    ls_log "  Create one first:  logsentry init"
+    exit "$LS_EXIT_RUNTIME"
+  }
+}
+
+# --- Commands ---------------------------------------------------------------
+
+cmd_init() {
+  ls_require_targets
+  local bl tmp count
+  bl=$(ls_baseline_path)
+
+  if [ -f "$bl" ] && [ "$LS_ASSUME_YES" != "1" ]; then
+    ls_warn "a baseline already exists at $bl"
+    ls_warn "overwriting it discards the current root of trust — use 'logsentry accept' to"
+    ls_warn "re-baseline after reviewing changes, or pass -y to overwrite anyway."
+    printf 'Overwrite the baseline? [y/N] ' >&2
+    read -r reply
+    case "$reply" in [yY]*) ;; *) ls_log "aborted."; exit "$LS_EXIT_OK" ;; esac
+  fi
+
+  ls_info "building baseline (${LS_HASH_LABEL}) …"
+  tmp="${bl}.tmp.$$"
+  ls_baseline_build > "$tmp" || ls_die "baseline build failed"
+  mv "$tmp" "$bl"
+  chmod 600 "$bl" 2>/dev/null || true
+  ls_seal_write "$bl"
+
+  count=$(ls_baseline_count "$bl")
+  ls_ok "baseline created: $count file(s)"
+  ls_log "    baseline  $bl"
+  ls_log "    seal      $(ls_seal_path)"
+  [ "$SIDECAR_MD5" = "1" ] && ls_log "    sidecars  <file>.md5 written next to each monitored file"
+  ls_log ""
+  ls_log "    Next:  logsentry check"
+  return "$LS_EXIT_OK"
+}
+
+# ls_check_core — shared by `check` and `watch`: scan, render, alert, and set
+# LS_RESULT to the exit code the run earned.
+ls_check_core() {
+  local bl seal_state
+  bl=$(ls_baseline_path)
+  : > "$LS_SCAN_BUF"
+
+  # The seal is verified before anything else. If the baseline itself was
+  # edited, every "clean" result below it is worthless.
+  ls_seal_verify "$bl"; seal_state=$?
+  case "$seal_state" in
+    0) ls_debug "baseline seal verified" ;;
+    1) ls_emit SEAL "the baseline file was modified after it was sealed — do not trust this report" "$bl" ;;
+    2) ls_warn "baseline is not sealed; run 'logsentry init' to create a seal" ;;
+  esac
+
+  ls_scan "$bl"
+
+  case "$LS_FORMAT" in
+    text) ls_report_text "$LS_SCAN_BUF" "$LS_SHOW_OK" ;;
+    json) ls_report_json "$LS_SCAN_BUF" ;;
+    html) ls_report_html "$LS_SCAN_BUF" ;;
+  esac
+
+  ls_dispatch_alerts "$LS_SCAN_BUF"
+
+  # Keep a rolling record of every scan for later `logsentry report`.
+  cp "$LS_SCAN_BUF" "$STATE_DIR/last_scan.tsv" 2>/dev/null || true
+
+  if   [ "$LS_COUNT_CRITICAL" -gt 0 ]; then LS_RESULT=$LS_EXIT_CRITICAL
+  elif [ "$LS_COUNT_HIGH"     -gt 0 ]; then LS_RESULT=$LS_EXIT_HIGH
+  elif [ "$LS_COUNT_MEDIUM"   -gt 0 ] || [ "$LS_COUNT_LOW" -gt 0 ]; then LS_RESULT=$LS_EXIT_LOW
+  else LS_RESULT=$LS_EXIT_OK
+  fi
+}
+
+ls_reset_counters() {
+  LS_COUNT_TOTAL=0 LS_COUNT_OK=0 LS_COUNT_INFO=0 LS_COUNT_LOW=0
+  LS_COUNT_MEDIUM=0 LS_COUNT_HIGH=0 LS_COUNT_CRITICAL=0 LS_MAX_RANK=0
+}
+
+cmd_check() {
+  ls_require_baseline
+  ls_reset_counters
+  if [ -n "$LS_OUTFILE" ]; then
+    ls_check_core > "$LS_OUTFILE"
+    ls_ok "report written to $LS_OUTFILE"
+  else
+    ls_check_core
+  fi
+  return "$LS_RESULT"
+}
+
+cmd_watch() {
+  ls_require_baseline
+  local interval="${CHECK_INTERVAL:-60}"
+  case "$interval" in
+    ''|*[!0-9]*) ls_error "--interval must be a whole number of seconds"; exit "$LS_EXIT_USAGE" ;;
+  esac
+
+  ls_info "watching $(ls_baseline_count "$(ls_baseline_path)") file(s), every ${interval}s — Ctrl-C to stop"
+  # Long-running mode is where alerting actually matters, so a scan that finds
+  # nothing prints a single quiet heartbeat rather than a full clean report.
+  while :; do
+    ls_reset_counters
+    # Scan silently, then decide whether this iteration is worth printing.
+    ls_check_core > /dev/null
+    if [ "$LS_RESULT" -ne "$LS_EXIT_OK" ] || [ "$LS_COUNT_INFO" -gt 0 ]; then
+      ls_report_text "$LS_SCAN_BUF" "$LS_SHOW_OK"
+    else
+      [ "$LS_QUIET" = "1" ] || printf '%s[%s] clean — %d files verified%s\n' \
+        "$C_DIM" "$(ls_iso8601)" "$LS_COUNT_OK" "$C_RESET" >&2
+    fi
+    sleep "$interval"
+  done
+}
+
+cmd_status() {
+  local bl count created host algo seal_state age now mtime
+  bl=$(ls_baseline_path)
+
+  printf '\n%s  LogSentry status%s\n' "$C_BOLD" "$C_RESET"
+  printf '%s  ─────────────────────────────────────────────%s\n' "$C_DIM" "$C_RESET"
+  printf '  version      %s\n' "$LS_VERSION"
+  printf '  config       %s\n' "${LS_CONFIG:-<none>}"
+  printf '  state dir    %s\n' "$STATE_DIR"
+  printf '  algorithm    %s (%s)\n' "$LS_HASH_LABEL" "$LS_HASHER"
+
+  if [ ! -f "$bl" ]; then
+    printf '  baseline     %s(none — run: logsentry init)%s\n\n' "$C_YELLOW" "$C_RESET"
+    return "$LS_EXIT_RUNTIME"
+  fi
+
+  count=$(ls_baseline_count "$bl")
+  created=$(ls_baseline_meta "$bl" created_at)
+  host=$(ls_baseline_meta "$bl" host)
+  algo=$(ls_baseline_meta "$bl" algo)
+  mtime=$(ls_stat "$bl" | cut -f2)
+  now=$(ls_epoch)
+  age=$(( (now - ${mtime:-now}) / 3600 ))
+
+  printf '  baseline     %s\n' "$bl"
+  printf '  files        %s\n' "$count"
+  printf '  created      %s  (%sh ago)\n' "${created:-?}" "$age"
+  printf '  taken on     %s\n' "${host:-?}"
+  printf '  baselined w/ %s\n' "${algo:-?}"
+
+  ls_seal_verify "$bl"; seal_state=$?
+  case "$seal_state" in
+    0) printf '  seal         %sintact%s\n' "$C_GREEN" "$C_RESET" ;;
+    1) printf '  seal         %sBROKEN — the baseline was modified after sealing%s\n' "$C_BOLD$C_RED" "$C_RESET" ;;
+    2) printf '  seal         %smissing%s\n' "$C_YELLOW" "$C_RESET" ;;
+  esac
+  printf '\n'
+  [ "$seal_state" -eq 1 ] && return "$LS_EXIT_CRITICAL"
+  return "$LS_EXIT_OK"
+}
+
+cmd_verify() {
+  ls_require_baseline
+  local bl state; bl=$(ls_baseline_path)
+  ls_seal_verify "$bl"; state=$?
+  case "$state" in
+    0) ls_ok "baseline seal is intact"; return "$LS_EXIT_OK" ;;
+    2) ls_warn "no seal found for $bl"; return "$LS_EXIT_LOW" ;;
+    *)
+      ls_error "BASELINE SEAL BROKEN"
+      ls_log "  $bl no longer matches $(ls_seal_path)."
+      ls_log "  Someone or something rewrote the baseline. Treat every subsequent"
+      ls_log "  'clean' result as unreliable and go to docs/INCIDENT-RESPONSE.md."
+      return "$LS_EXIT_CRITICAL" ;;
+  esac
+}
+
+cmd_accept() {
+  ls_require_baseline
+  ls_require_targets
+  local bl; bl=$(ls_baseline_path)
+
+  if [ "$LS_ASSUME_YES" != "1" ]; then
+    ls_reset_counters
+    LS_FORMAT=text ls_check_core
+    printf 'Accept the changes above as the new baseline? [y/N] ' >&2
+    read -r reply
+    case "$reply" in [yY]*) ;; *) ls_log "aborted — baseline unchanged."; exit "$LS_EXIT_OK" ;; esac
+  fi
+
+  # Keep the superseded baseline. During an investigation the previous root of
+  # trust is evidence, and losing it to a hasty `accept` is unrecoverable.
+  local stamp; stamp=$(date -u '+%Y%m%dT%H%M%SZ')
+  cp "$bl" "$STATE_DIR/baseline.db.$stamp" 2>/dev/null && \
+    ls_info "previous baseline archived as baseline.db.$stamp"
+
+  ls_baseline_build > "${bl}.tmp.$$" || ls_die "baseline rebuild failed"
+  mv "${bl}.tmp.$$" "$bl"
+  chmod 600 "$bl" 2>/dev/null || true
+  ls_seal_write "$bl"
+  ls_ok "baseline updated: $(ls_baseline_count "$bl") file(s)"
+  return "$LS_EXIT_OK"
+}
+
+cmd_report() {
+  local last="$STATE_DIR/last_scan.tsv"
+  [ -f "$last" ] || { ls_error "no previous scan found — run 'logsentry check' first"; exit "$LS_EXIT_RUNTIME"; }
+
+  # Rebuild the counters from the stored scan so the summary matches the rows.
+  ls_reset_counters
+  local verdict sev _detail _path
+  while IFS=$'\t' read -r verdict sev _detail _path; do
+    [ -n "$verdict" ] || continue
+    LS_COUNT_TOTAL=$((LS_COUNT_TOTAL + 1))
+    case "$sev" in
+      NONE)     LS_COUNT_OK=$((LS_COUNT_OK + 1)) ;;
+      INFO)     LS_COUNT_INFO=$((LS_COUNT_INFO + 1)) ;;
+      LOW)      LS_COUNT_LOW=$((LS_COUNT_LOW + 1)) ;;
+      MEDIUM)   LS_COUNT_MEDIUM=$((LS_COUNT_MEDIUM + 1)) ;;
+      HIGH)     LS_COUNT_HIGH=$((LS_COUNT_HIGH + 1)) ;;
+      CRITICAL) LS_COUNT_CRITICAL=$((LS_COUNT_CRITICAL + 1)) ;;
+    esac
+  done < "$last"
+
+  local render
+  case "$LS_FORMAT" in
+    html) render=ls_report_html ;;
+    json) render=ls_report_json ;;
+    *)    render=ls_report_text ;;
+  esac
+
+  if [ -n "$LS_OUTFILE" ]; then
+    "$render" "$last" > "$LS_OUTFILE"
+    ls_ok "report written to $LS_OUTFILE"
+  else
+    "$render" "$last"
+  fi
+  return "$LS_EXIT_OK"
+}
+
+# --- Entry point ------------------------------------------------------------
+main() {
+  local cmd="${1:-help}"
+  [ $# -gt 0 ] && shift
+
+  case "$cmd" in
+    -h|--help|help) ls_usage; exit "$LS_EXIT_OK" ;;
+    -V|--version|version) printf 'logsentry %s\n' "$LS_VERSION"; exit "$LS_EXIT_OK" ;;
+  esac
+
+  ls_parse_args "$@"
+  ls_bootstrap
+
+  case "$cmd" in
+    init)   cmd_init ;;
+    check)  cmd_check ;;
+    watch)  cmd_watch ;;
+    status) cmd_status ;;
+    verify) cmd_verify ;;
+    accept) cmd_accept ;;
+    report) cmd_report ;;
+    *)
+      ls_error "unknown command: $cmd"
+      ls_log "try: logsentry help"
+      exit "$LS_EXIT_USAGE" ;;
+  esac
+}
+
+main "$@"
