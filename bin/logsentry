@@ -120,6 +120,11 @@ ls_parse_args() {
   LS_CLI_SIDECAR=""
 
   while [ $# -gt 0 ]; do
+    # LS_VERBOSE and LS_QUIET are read by the logging helpers in lib/common.sh,
+    # which ShellCheck analyses as a separate file and so reports as unused.
+    # A directive is only valid in front of a complete command, hence the whole
+    # case statement rather than the individual branch.
+    # shellcheck disable=SC2034
     case "$1" in
       -c|--config)   LS_CONFIG="${2:?--config needs a file}"; shift 2 ;;
       -p|--path)     LS_CLI_PATHS="$LS_CLI_PATHS ${2:?--path needs a value}"; shift 2 ;;
@@ -131,7 +136,6 @@ ls_parse_args() {
       --sidecar)     LS_CLI_SIDECAR=1; shift ;;
       --all)         LS_SHOW_OK=1; shift ;;
       -y|--yes)      LS_ASSUME_YES=1; shift ;;
-      # shellcheck disable=SC2034  # LS_VERBOSE is read by ls_debug() in lib/common.sh
       -v|--verbose)  LS_VERBOSE=1; shift ;;
       -q|--quiet)    LS_QUIET=1; shift ;;
       -h|--help)     ls_usage; exit 0 ;;
